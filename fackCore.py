@@ -1,19 +1,20 @@
+import logging
 import calendar
 import datetime
 import pypyodbc
 import random
 import csv
-# init arg 每月需要修改吨数
-needs = [100,100,100,100,100,100,100]
-needsPerMonth = []
-for i in needs:
-    needsPerMonth.append( round(i/50) )
+logging.basicConfig(level=logging.INFO)
+#logging.basicConfig(level=logging.DEBUG)
+# init arg 日期 需要修改吨数 日期与吨数一一对应
 workYear = 2018
-startMonth =  5
-endMonth = 11
-goodsName = "煤灰"
-carWaitingMin = 60
+monthList = [ 6,7,10 ]
+monthLimit = [ 2000,2000,4000]
+goodsName = "碎石"
+# 其它参数 车辆最小载重量过滤 车辆等待时间单位分钟 磅房工作人员
+carMinWeight = 40
 carWaitingMax = 360
+carWaitingMin = 60
 staffList = ['雷启涛','李艺','文峰','丁小虎']
 
 #连接数据库
@@ -28,44 +29,40 @@ targetcursor = targetDB.cursor()
     # 年月日 + 000只有个位时 00有十位时 eg.201805020001 201805020012
     # 生成一个月的单号
 def generateBillNum( m ):
+    #logging.info("开始生成"+str(m)+"月单号")
     CalObj = calendar.Calendar()
-    BillNum = []
+    billNum = []
     for i in CalObj.itermonthdates(workYear, m):
         # 剔除 itermonthdates 生成的带非本月的日子
         if i.month != m:
             continue
         else:
             i = i.strftime("%Y%m%d")
-            # eg.20180602
+            # 这儿的 通配符是 % 而 ACCESS里是 * 注意
+            SQL = "SELECT 称重记录.* FROM 称重记录 WHERE 货物名称='{goodsFilter}' AND 单号 LIKE '{billFilter}%';"
+            SQL = SQL.format(goodsFilter=goodsName,billFilter=i)
+            cursor.execute(SQL)
+            row = cursor.fetchall()
+            # eg.20180602 + xxxxx
             for x in range(89):
                 x=x+1
-                if x > 9:
-                    x = str(i)+"00"+str(x)
-                else:
+                if x < 10:
                     x = str(i)+"000"+str(x)
-                BillNum.append(x)
-    return BillNum
-
-    # 单号去重
-def filterBillNum( BillNum , goodsName  ):
-    SQL = "SELECT 称重记录.* FROM 称重记录 WHERE 称重记录.货物名称='{goodsFilter}';"
-    SQL = SQL.format(goodsFilter=goodsName)
-    cursor.execute(SQL)
-    row = cursor.fetchall()
-    for i in row:
-        for m in range(len(BillNum)):
-            for item in BillNum[m]:
-                if int(i[0]) == int(item):
-                    BillNum[m].remove( i[0] )
-    return BillNum
-
-    #生成所有月份单号
-def generateAllBillNum():
-    BillNum = []
-    for i in range( startMonth, endMonth+1 ): 
-        BillNum.append( generateBillNum( i ) )
-    BillNum = filterBillNum( BillNum, goodsName )
-    return BillNum
+                elif x < 100:
+                    x = str(i)+"00"+str(x)
+                elif x < 1000:
+                    x = str(i)+"0"+str(x)
+                # 单号去重
+                if row:
+                    for record in row:
+                        if int(record[0]) != int(x):
+                            billNum.append(x)
+                        else:
+                            pass
+                else:
+                    billNum.append(x)
+    logging.info( str(m)+"月生成单号："+str(len(billNum))+"个" )
+    return billNum
 
 # 匹配车辆载重值
     #车牌去重 取极值作为浮动上下极限
@@ -79,9 +76,9 @@ def bindingVolume( goodsName ):
         carNum.append( i[1] )
     carNum = list(set(carNum))
     #取值
-    SQL = "SELECT 毛重,皮重,净重 FROM 称重记录 WHERE 称重记录.货物名称='{goodsFilter}' AND 称重记录.车号='{carFilter}';"
     carTemplate = {}
     for num in carNum:
+        SQL = "SELECT 毛重,皮重,净重 FROM 称重记录 WHERE 称重记录.货物名称='{goodsFilter}' AND 称重记录.车号='{carFilter}';"
         SQL = SQL.format(goodsFilter=goodsName,carFilter=num)
         cursor.execute(SQL)
         row = cursor.fetchall()
@@ -93,44 +90,58 @@ def bindingVolume( goodsName ):
             gross.append( items[0] )
             tare.append( items[1] )
             net.append( items[2] )
-        carTemplate[num] = [max(gross),min(gross),max(tare),min(tare),str(num)]
+        if max(net)>carMinWeight:
+            carTemplate[num] = [max(gross),min(gross),max(tare),min(tare),str(num)]
     return carTemplate
 
 
 
-def generateFack():
-    billNumList = generateAllBillNum()
-    carObj = bindingVolume( goodsName )
-    # - - - - - - -
-    carIdList = list(carObj.keys())
+
+def generateRecord( month, needsNet, generateNet, billNumList, carObj, carIdList ):
+    billNum = random.choice( billNumList )
+    carNum = random.choice( carIdList )
+    carIdList.remove(carNum)
+    shipper = "伏龙预制场"
+    consignee = "泸州市森源建材有限公司古蔺分公司"
+    #goodsName 全局变量
+    specifications = ''
+    dateIn = str(billNum[0:8])
+    dateIn = dateIn +" "+ str(random.randint(0,23))+ ":" + str(random.randint(0,59))+ ":" + str(random.randint(0,59))
+    dateIn = datetime.datetime.strptime(dateIn, "%Y%m%d %H:%M:%S")
+    dateOut = dateIn + datetime.timedelta(minutes = random.randint(carWaitingMin,carWaitingMax))
+    dateIn = dateIn.strftime("%Y%m%d %H:%M:%S")
+    dateOut = dateOut.strftime("%Y%m%d %H:%M:%S")
+    carNum = carObj[carNum][-1]
+    gross = round(random.uniform(carObj[carNum][0],carObj[carNum][1]), 2)
+    tare = round(random.uniform(carObj[carNum][2],carObj[carNum][3]), 2)
+    net = round(gross - tare, 2)
+    inStaff = random.choice(staffList)
+    outStaff = random.choice(staffList)
+               #'单号','车号','发货单位','收货单位','货物名称','规 格 型 号','承运单位','系统备注','单位','进厂司磅员','司磅员','进厂时间','日期时间','打印次数','毛重','皮重','净重'
+    billData = (billNum, carNum, shipper, consignee, goodsName, specifications, '', "'存盘仪表录入", "吨", inStaff, outStaff, dateIn, dateOut, 0, gross, tare, net)
+    generateNet += net
+    logging.debug( "已生成"+str(round(generateNet,2)) )
+    if generateNet < needsNet:
+        generateRecord( month, needsNet, generateNet, billNumList, carObj, carIdList )
+    else:
+        logging.info( str(month)+"月  需  要："+str(needsNet)+"吨" )
+        logging.info( str(month)+"月总计生成："+str(round(generateNet,2))+"吨" )
+    # ---- 最后进行数据库写入操作 ----
     SQL = "Insert into 称重记录(单号,车号,发货单位,收货单位,货物名称,规格型号,承运单位,系统备注,单位,进厂司磅员,司磅员,进厂时间,日期时间,打印次数,毛重,皮重,净重) values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    for i in range(len(needsPerMonth)):
-        for x in range(needsPerMonth[i]):
-            billNum = random.choice( billNumList[i] )
-            carNum = random.choice( carIdList )
-            #carIdList.remove(carNum)
-            dateIn = str(billNum[0:8])
-            dateIn = dateIn +" "+ str(random.randint(0,23))+ ":" + str(random.randint(0,59))+ ":" + str(random.randint(0,59))
-            dateIn = datetime.datetime.strptime(dateIn, "%Y%m%d %H:%M:%S")
-            dateOut = dateIn + datetime.timedelta(minutes = random.randint(carWaitingMin,carWaitingMax))
-            dateIn = dateIn.strftime("%Y%m%d %H:%M:%S")
-            dateOut = dateOut.strftime("%Y%m%d %H:%M:%S")
-            carNum = carObj[carNum][-1]
-            gross = round(random.uniform(carObj[carNum][0],carObj[carNum][1]), 2)
-            tare = round(random.uniform(carObj[carNum][2],carObj[carNum][3]), 2)
-            net = round(gross - tare, 2)
-            inStaff = random.choice(staffList)
-            outStaff = random.choice(staffList)
-                              #'单号','车号','发货单位','收货单位','货物名称','规格型号','承运单位','系统备注','单位','进厂司磅员','司磅员',
-                              #'进厂时间','日期时间','打印次数','毛重','皮重','净重'
-            billData = (billNum,carNum,"习水黔佰楼建材有限公司","泸州市森源建材有限公司古蔺分公司",goodsName,'','',"'存盘仪表录入","吨",inStaff,outStaff,dateIn,dateOut,0,gross,tare,net)
-            targetcursor.execute(SQL,billData)
-            targetcursor.commit()
-            targetDB.commit()
+    targetcursor.execute(SQL,billData)
+    targetcursor.commit()
 
-
+def generateFackReport( monthList, monthLimit ):
+    carObj = bindingVolume( goodsName )
+    for month in monthList:
+        logging.info( "---- 开始第"+str(month)+"月记录 ----" )
+        billNumList = generateBillNum( month )
+        carIdList = list(carObj.keys())
+        generateNet = 0
+        needsNet = monthLimit[monthList.index(month)]
+        generateRecord( month, needsNet, generateNet, billNumList, carObj, carIdList )
 
 # # # # # # # # # Function End # # # # # # # # # # # # # #
-generateFack()
+generateFackReport( monthList, monthLimit )
 DB.close()
 targetDB.close()
